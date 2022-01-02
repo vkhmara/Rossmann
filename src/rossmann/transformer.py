@@ -6,10 +6,11 @@ from operator import attrgetter
 
 class MyTransformer(BaseEstimator, TransformerMixin):
     def __init__(self, store):
+        self.origin_store = store.copy()
         self.store = store.copy()
         
     def fit(self, X, y):
-        self.store = self.store.merge(np.log10(X.groupby('Store').Customers.sum() - 1.2e5), on='Store')
+        self.store = self.origin_store.merge(np.log10(X.groupby('Store').Customers.sum() + 1), on='Store')
         
         std_scaler = StandardScaler()
         self.store['Encoded_Customers'] = std_scaler.fit_transform(self.store[['Customers']])
