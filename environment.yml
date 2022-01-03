@@ -8,6 +8,7 @@ dependencies:
   - ipykernel
   - ipython
   - jupyter
+  - jupyterlab
   - jupyter_contrib_nbextensions
   - jupyter_nbextensions_configurator
   - matplotlib=3.3.4
