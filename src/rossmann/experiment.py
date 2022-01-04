@@ -73,6 +73,3 @@ class Experiment:
             'val_score': val_scores,
             'test_score': test_scores,
         })
-
-
-

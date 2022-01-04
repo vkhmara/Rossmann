@@ -18,4 +18,4 @@ dependencies:
   - scipy=1.6.2
   - seaborn=0.11.1
   - lightgbm=3.2.1
-  - prophet=1.0
+  - prophet=1.0.1
