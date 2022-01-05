@@ -48,8 +48,7 @@ class ProphetRegressor(Regressor):
         self.eval_times = []
         for store in self.stores:
             start = time.time()
-            store_mask = X['Store'] == store
-            df = X.loc[store_mask, ['ordered_day', 'target']]\
+            df = X.loc[X['Store'] == store, ['ordered_day', 'target']]\
                 .merge(all_days, how='right', on='ordered_day').fillna(0)
             df['ordered_day'] = df['ordered_day'].apply(lambda d: self.start_date + timedelta(days=d))
             df.rename(columns={
@@ -68,18 +67,17 @@ class ProphetRegressor(Regressor):
         X = X[['Store', 'ordered_day']]
         X['ordered_day'] = X['ordered_day'].apply(lambda d: self.start_date + timedelta(days=d))
         prediction = np.zeros(len(X))
-        self.predict_dfs = []
         for store in self.stores:
-            start = time.time()
+            # start = time.time()
             store_mask = X['Store'] == store
             if not store_mask.any():
-                print(f'Store: {store}\nEvaluation time: {(end - start):.2f} s')
+                # print(f'Store: {store}\nEvaluation time: {(end - start):.2f} s')
                 continue
             df = X.loc[store_mask, ['ordered_day']]
             df.rename(columns={
                 'ordered_day': 'ds',
             }, inplace=True)
-            prediction[store_mask] = self.prophets[store].predict(df).yhat
-            end = time.time()
+            prediction[store_mask] = self.prophets[store].predict(df).yhat.values
+            # end = time.time()
             # print(f'Store: {store}\nEvaluation time: {(end - start):.2f} s')
         return prediction
