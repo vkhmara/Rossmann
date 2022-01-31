@@ -1,14 +1,23 @@
 from sklearn.preprocessing import StandardScaler    
 from sklearn.base import BaseEstimator, TransformerMixin
 import numpy as np
+import pandas as pd
 import datetime
 from operator import attrgetter
+from itertools import product
 
-class MyTransformer(BaseEstimator, TransformerMixin):
-    def __init__(self, store):
-        self.origin_store = store.copy()
-        self.store = store.copy()
-        
+class Transformer(BaseEstimator, TransformerMixin):
+    def fit(self, X, y):
+        pass
+
+    def transform(self, X, y):
+        pass
+
+class LightGBMTransformer(Transformer):
+    def __init__(self, store_filename):
+        self.origin_store = pd.read_csv(store_filename)
+        self.store = self.origin_store.copy()
+
     def fit(self, X, y):
         self.store = self.origin_store.merge(np.log10(X.groupby('Store').Customers.sum() + 1), on='Store')
         
@@ -41,12 +50,15 @@ class MyTransformer(BaseEstimator, TransformerMixin):
         # it is used to form features
         dates = X_transformed.Date.apply(lambda date: datetime.datetime.strptime(date, '%Y-%m-%d'))
         
+        # TODO: avoid the date 01.01.2013 from code
+
         # create the features that equal the number of days, weeks and years respectively
         # since the start of history
         X_transformed['ordered_day'] = (dates - datetime.datetime(2013, 1, 1)).apply(attrgetter('days'))
         X_transformed['ordered_week'] = X_transformed['ordered_day'] // 7
         X_transformed['ordered_month'] = dates.apply(lambda date: date.month + 12 * (date.year - 2013) - 1)
         X_transformed['MonthOfYear'] = X_transformed['ordered_month'] % 12
+        X_transformed['ds_for_ts'] = dates
         X_transformed.drop(columns='Date', inplace=True)
 
         # encode change the values 'b' and 'c' of StateHoliday feature to 'a' and then encode
@@ -60,3 +72,21 @@ class MyTransformer(BaseEstimator, TransformerMixin):
         if y is None:
             return X_transformed
         return X_transformed.drop(columns='target'), X_transformed.target
+
+class ProphetTransformer(Transformer):
+    def fit(self, X=None, y=None):
+        return self
+    
+    def transform(self, X, y=None):
+        if y is None:
+            y = X['Sales']
+        X = pd.concat([X[['Store', 'Date']], y], axis=1)
+        X['Date'] = X['Date'].apply(lambda date: datetime.datetime.strptime(date, '%Y-%m-%d'))
+        all_date_stores = pd.DataFrame(
+            product(X['Date'].unique(), X['Store'].unique()),
+            columns=['Date', 'Store']
+        )
+        X = X.merge(all_date_stores, how='right', on=['Date', 'Store']).fillna(0)
+        X['ds_for_ts'] = X['Date']
+
+        return X[['Store', 'Date', 'ds_for_ts']], X['Sales']

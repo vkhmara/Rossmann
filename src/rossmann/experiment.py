@@ -1,75 +1,346 @@
 import datetime
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import pickle
+
+from rossmann.regressor import Regressor
+from rossmann.transformer import Transformer
+
 
 class Experiment:
-    def __init__(self, df, regressor, transformer, n_folds=5, window_part=0.6, val_part=0.1, test_part=0.1):
+    TRAIN = 0
+    VAL = 1
+    TEST = 2
+    DATE_COL = 'ds_for_ts'
+
+    @staticmethod
+    def metric(y_true, y_pred):
+        y_t = y_true[np.abs(y_true) > 1e-5]
+        y_p = y_pred[np.abs(y_true) > 1e-5]
+        return np.sqrt(np.mean((1 - y_p / y_t)**2))
+
+    def __init__(self, df_filename, store_filename, regressor: Regressor, transformer: Transformer,
+                 n_folds=5, window_part=0.6, val_part=48, test_part=48):
+
+        # just saving info
         self.n_folds = n_folds
         self.window_part = window_part
         self.val_part = val_part
         self.test_part = test_part
         self.regressor = regressor
 
-        df_copy = df.copy()
+        # read the dataset and store tables
+        self.df = pd.read_csv(df_filename)
+        self.store = pd.read_csv(store_filename)
 
-        df_copy['ordered_day'] = df['Date'].apply(
-            lambda date: (datetime.datetime.strptime(date, '%Y-%m-%d') -\
-                datetime.datetime(2013, 1, 1)).days
-                )
+        # creating DATE_COL column for slicing the dataset
+        self.df[Experiment.DATE_COL] = self.df['Date'].apply(
+            lambda date: datetime.datetime.strptime(date, '%Y-%m-%d'))
+        start_date = self.df[Experiment.DATE_COL].min()
+        self.df['ordered_day'] = self.df[Experiment.DATE_COL].apply(
+            lambda date: (date - start_date).days)
 
-        all_time_values = df_copy['ordered_day'].unique()
+        # calculating the window length
+        all_time_values = self.df['ordered_day'].unique()
         min_day, max_day = min(all_time_values), max(all_time_values)
         n = max_day - min_day
         window_len = int(n * self.window_part)
 
+        # if test_part is the part of dataset to be tested
+        # then it will become the length of the test part
+        if isinstance(self.test_part, float):
+            self.test_part = int(window_len * self.test_part)
+
+        # analogically the previous block
+        if isinstance(self.val_part, float):
+            self.val_part = int(window_len * self.val_part)
+
+        # the dataframes for all slices will be saved
         self.train_dfs = []
         self.val_dfs = []
         self.test_dfs = []
 
-        for fold in range(self.n_folds):
-            end_day = min_day + window_len - 1 + (fold * (n - window_len)) // (self.n_folds - 1)
-            start_day = end_day - window_len + 1
-            
-            mask = (start_day <= df_copy['ordered_day']) & (df_copy['ordered_day'] <= end_day)
-            df = df_copy[mask]
-            X, y = df.drop(columns='Sales'), df['Sales']
-            
-            val_end_day = end_day - self.test_part * window_len
-            train_end_day = val_end_day - self.val_part * window_len
+        # the total information about the datasets of
+        # each slice will be saved
+        self.train_date_info = []
+        self.val_date_info = []
+        self.test_date_info = []
 
-            train_mask = (start_day <= X['ordered_day']) & (X['ordered_day'] <= train_end_day)
-            val_mask = (train_end_day + 1 <= X['ordered_day']) & (X['ordered_day'] <= val_end_day)
-            test_mask = (val_end_day + 1 <= X['ordered_day']) & (X['ordered_day'] <= end_day)
-            
+        for fold in range(self.n_folds):
+            # calculation the first and the last day of fold
+            end_day = min_day + window_len - 1 + \
+                (fold * (n - window_len)) // (self.n_folds - 1)
+            start_day = end_day - window_len + 1
+
+            # choosing only necessary data from table and
+            # extracting target from this
+            mask = (start_day <= self.df['ordered_day']) & (
+                self.df['ordered_day'] <= end_day)
+            df = self.df[mask]
+            X, y = df.drop(columns='Sales'), df['Sales']
+
+            # right borders of train and val datasets
+            val_end_day = int(end_day - self.test_part)
+            train_end_day = int(val_end_day - self.val_part)
+
+            # masks for extracting the datasets
+            train_mask = (start_day <= X['ordered_day']) & (
+                X['ordered_day'] <= train_end_day)
+            val_mask = (train_end_day + 1 <=
+                        X['ordered_day']) & (X['ordered_day'] <= val_end_day)
+            test_mask = (val_end_day + 1 <=
+                         X['ordered_day']) & (X['ordered_day'] <= end_day)
+
+            # extracting the train, val and test dataset
             X_train, y_train = X[train_mask], y[train_mask]
             X_val, y_val = X[val_mask], y[val_mask]
             X_test, y_test = X[test_mask], y[test_mask]
 
+            # the information about each dataset is saved
+            self.train_date_info.append(
+                (X_train[Experiment.DATE_COL].min(),
+                 X_train[Experiment.DATE_COL].max(),
+                 (X_train[Experiment.DATE_COL].max() -
+                  X_train[Experiment.DATE_COL].min()).days + 1
+                 ))
+            self.val_date_info.append(
+                (X_val[Experiment.DATE_COL].min(),
+                 X_val[Experiment.DATE_COL].max(),
+                 (X_val[Experiment.DATE_COL].max() - X_val[Experiment.DATE_COL].min()).days + 1))
+            self.test_date_info.append(
+                (X_test[Experiment.DATE_COL].min(),
+                 X_test[Experiment.DATE_COL].max(),
+                 (X_test[Experiment.DATE_COL].max() - X_test[Experiment.DATE_COL].min()).days + 1))
+
+            # fit transformer and transform the datasets
             transformer.fit(X_train, y_train)
             self.train_dfs.append(transformer.transform(X_train, y_train))
             self.val_dfs.append(transformer.transform(X_val, y_val))
             self.test_dfs.append(transformer.transform(X_test, y_test))
 
-    def run(self):
+    def run(self, models_folder, mode='r'):
 
+        # scores of each fold are saved
         train_scores = []
         val_scores = []
         test_scores = []
 
+        # scores of each fold and each horizont are saved
+        val_horiz_scores = []
+        test_horiz_scores = []
+
+        # these arrays are needed just for loop iteration
+        scores = [train_scores, val_scores, test_scores]
+        horiz_scores = [None, val_horiz_scores, test_horiz_scores]
+        dataset_types = [Experiment.TRAIN, Experiment.VAL, Experiment.TEST]
+        
+        # the predictions of each fold.
+        # They contain true, prediction, DATE_COL and Store columns
+        self.predictions = []
+
         for fold in range(self.n_folds):
+            # read the fitted model from file
+            if mode == 'r':
+                with open(models_folder + f'model_{fold}.pickle', 'rb') as f:
+                    self.regressor = pickle.load(f)
+            # or fit it and write to file
+            else:
+                X, y = self.train_dfs[fold]
+                self.regressor.fit(X.drop(columns=Experiment.DATE_COL), y)
+                if mode == 'w':
+                    with open(models_folder + f'model_{fold}.pickle', 'wb') as f:
+                        pickle.dump(self.regressor, f)
+
+            # scores on val and test datasets depending on horizont
+            val_horiz_scores.append([])
+            test_horiz_scores.append([])
+
+            # just get the necessary datasets from arrays
             X_train, y_train = self.train_dfs[fold]
             X_val, y_val = self.val_dfs[fold]
             X_test, y_test = self.test_dfs[fold]
+
+            # combining all datasets for predicting on all data
+            # and further processing the results
+            all_X = pd.concat([X_train, X_val, X_test],
+                              axis=0, ignore_index=True)
+            all_y = pd.concat([y_train, y_val, y_test],
+                              axis=0, ignore_index=True)
             
-            self.regressor.fit(X_train, y_train)
-            
-            train_scores.append(self.regressor.score(X_train, y_train))
-            val_scores.append(self.regressor.score(X_val, y_val))
-            test_scores.append(self.regressor.score(X_test, y_test))
-        
-        return pd.DataFrame({
-            'fold': range(self.n_folds),
-            'train_score': train_scores,
-            'val_score': val_scores,
-            'test_score': test_scores,
-        })
+            # predict all and save it
+            prediction = self.regressor.predict(
+                all_X.drop(columns=Experiment.DATE_COL))
+            prediction = pd.concat([all_X[['Store', Experiment.DATE_COL]],
+                                    pd.Series(all_y, name='true'),
+                                    pd.Series(
+                prediction, name='prediction'),
+                pd.Series(
+                [Experiment.TRAIN]*len(X_train) +
+                [Experiment.VAL]*len(X_val) +
+                [Experiment.TEST]*len(X_test),
+                name='dataset_type'
+            )],
+                axis=1)
+            self.predictions.append(prediction)
+
+            # processing the results of predicting
+            # the train, val and test datasets
+            for score, dataset_type, horiz_score in zip(scores, dataset_types, horiz_scores):
+                
+                # extracting the data of the dataset_type
+                prediction_of_dataset_type = prediction.loc[prediction['dataset_type'] == dataset_type]
+                score.append(Experiment.metric(prediction_of_dataset_type['true'],
+                                               prediction_of_dataset_type['prediction']))
+                
+                if dataset_type == Experiment.TRAIN:
+                    continue
+                
+                # for val and test datasets the scores depending
+                # on horizont are calculated
+                ds = prediction_of_dataset_type[Experiment.DATE_COL]
+                all_dates = np.sort(ds.unique())
+                for date in all_dates:
+                    prediction_of_dataset_type_horiz = prediction_of_dataset_type[
+                        prediction_of_dataset_type[Experiment.DATE_COL] == date]
+                    horiz_score[fold].append(
+                        Experiment.metric(prediction_of_dataset_type_horiz['true'],
+                                          prediction_of_dataset_type_horiz['prediction']))
+
+        # cast the datasets and horizont scores information to dataframes
+        train_bounds = pd.DataFrame(self.train_date_info, columns=[
+                                    'train_start_date', 'train_end_date', 'train_days'])
+        val_bounds = pd.DataFrame(self.val_date_info, columns=[
+                                  'val_start_date', 'val_end_date', 'val_days'])
+        test_bounds = pd.DataFrame(self.test_date_info, columns=[
+                                   'test_start_date', 'test_end_date', 'test_days'])
+        val_horiz_scores = pd.DataFrame(val_horiz_scores,
+                                        columns=[f'val_score_{i+1}' for i in range(self.val_part)])
+        test_horiz_scores = pd.DataFrame(test_horiz_scores,
+                                         columns=[f'test_score_{i+1}' for i in range(self.test_part)])
+
+        # common results about experiment
+        self.results = pd.concat([
+            pd.DataFrame({
+                'fold': range(self.n_folds),
+                'train_score': train_scores,
+                'val_score': val_scores,
+                'test_score': test_scores,
+            }),
+            train_bounds, val_bounds, test_bounds,
+            val_horiz_scores, test_horiz_scores
+        ], axis=1)
+
+        # reducing the memory size
+        del self.train_dfs
+        del self.val_dfs
+        del self.test_dfs
+
+        self.view_horizont_errors()
+        self.view_dataset_slicing()
+        self.view_prediction_results()
+
+        return self.results
+
+    def view_horizont_errors(self):
+        for fold in range(self.n_folds):
+            fold_info = self.results[self.results['fold'] == fold]
+
+            val_horizonts = np.arange(1, self.val_part + 1)
+            test_horizonts = np.arange(1, self.test_part + 1)
+            val_horiz_scores = fold_info[[
+                f'val_score_{i}' for i in val_horizonts]].values[0]
+            test_horiz_scores = fold_info[[
+                f'test_score_{i}' for i in test_horizonts]].values[0]
+
+            plt.figure(figsize=(12, 7))
+            plt.title(f'errors of horizonts, fold={fold}')
+            plt.plot(val_horizonts, val_horiz_scores)
+            plt.plot(test_horizonts + self.val_part, test_horiz_scores)
+            plt.legend(['val', 'test'])
+            plt.xlabel('horizont')
+            plt.ylabel('error')
+            plt.grid(axis='y', ls='--')
+
+            plt.show()
+
+    def view_dataset_slicing(self):
+        plt.figure(figsize=(12, 7))
+        plt.title('dataset slicing')
+        for fold in range(self.n_folds):
+            plt.plot(self.train_date_info[fold][:2], [fold, fold], color='b')
+            plt.plot(self.val_date_info[fold][:2], [fold, fold], color='y')
+            plt.plot(self.test_date_info[fold][:2], [fold, fold], color='r')
+        plt.legend(['train', 'val', 'test'])
+        plt.yticks(range(5), range(5))
+        plt.grid(b=True, ls='--')
+        plt.xlabel('date')
+        plt.ylabel('the number of fold')
+        plt.show()
+
+    @staticmethod
+    def RMSPE(col):
+        return np.sqrt((col**2).sum() / len(col))
+
+    @staticmethod
+    def get_cat_errors(error_df, cat):
+        return error_df.groupby(cat, dropna=False).agg(
+            {'rspe': Experiment.RMSPE}).rename(columns={'rspe': 'rmspe'})
+
+    @staticmethod
+    def plot_cat_rmspe(error_df, cat, ax):
+        errs = Experiment.get_cat_errors(error_df, cat)
+        ax.set_title('rmspe for category\n' + cat)
+        errs['rmspe'].plot(kind='barh', ax=ax)
+        ax.set_xlabel('error')
+        ax.set_ylabel(cat)
+        ax.grid(axis='x')
+
+    @staticmethod
+    def plot_diff_cat_rmspe(error_df1, error_df2, cat, ax):
+        errs1 = Experiment.get_cat_errors(error_df1, cat)
+        errs2 = Experiment.get_cat_errors(error_df2, cat)
+        errs = errs1 - errs2
+        ax.set_title('difference rmspe for category\n' + cat)
+        errs['rmspe'].plot(kind='barh', ax=ax)
+        ax.set_xlabel('difference error')
+        ax.set_ylabel(cat)
+        ax.grid(axis='x')
+
+    def view_prediction_results(self):
+        cats = ['DayOfWeek', 'Promo', 'StateHoliday', 'SchoolHoliday', 'StoreType',
+                'Assortment', 'Promo2', 'CompetitionOpenSinceMonth', 'CompetitionOpenSinceYear', ]
+        self.error_dfs = []
+        for fold in range(self.n_folds):
+            pred = self.predictions[fold].merge(self.store, on='Store')
+            pred['rspe'] = (pred['true'] - pred['prediction']) / pred['true']
+            error_df = self.df.merge(pred, on=[Experiment.DATE_COL, 'Store'])
+            error_df = error_df[~error_df.rspe.abs().isin([-np.inf, np.inf])]
+            error_df['StateHoliday'].replace(0, '0', inplace=True)
+            self.error_dfs.append(error_df)
+        width = 30
+        for cat in cats:
+            height = 0.7 * self.error_dfs[0][cat].nunique()
+            fig, axes = plt.subplots(1, self.n_folds, figsize=(width, height))
+            for fold, error_df in enumerate(self.error_dfs):
+                Experiment.plot_cat_rmspe(error_df, cat, axes[fold])
+            plt.show()
+
+
+def compare_experiments(exp1: Experiment, exp2: Experiment):
+    """
+    The experiments must be already run
+    """
+    assert exp1.n_folds == exp2.n_folds
+    n_folds = exp1.n_folds
+    cats = ['DayOfWeek', 'Promo', 'StateHoliday', 'SchoolHoliday', 'StoreType',
+            'Assortment', 'Promo2', 'CompetitionOpenSinceMonth', 'CompetitionOpenSinceYear', ]
+    width = 30
+    for cat in cats:
+        height = 0.7 * exp1.error_dfs[0][cat].nunique()
+        fig, axes = plt.subplots(1, n_folds, figsize=(width, height))
+        for fold, error_dfs in enumerate(zip(exp1.error_dfs, exp2.error_dfs)):
+            error_df1, error_df2 = error_dfs
+            Experiment.plot_diff_cat_rmspe(
+                error_df1, error_df2, cat, axes[fold])
+        plt.show()
