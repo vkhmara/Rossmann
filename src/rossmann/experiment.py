@@ -3,16 +3,15 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import pickle
+from rossmann.consts import DATE_COL
 
 from rossmann.regressor import Regressor
 from rossmann.transformer import Transformer
-
 
 class Experiment:
     TRAIN = 0
     VAL = 1
     TEST = 2
-    DATE_COL = 'ds_for_ts'
 
     @staticmethod
     def metric(y_true, y_pred):
@@ -35,10 +34,10 @@ class Experiment:
         self.store = pd.read_csv(store_filename)
 
         # creating DATE_COL column for slicing the dataset
-        self.df[Experiment.DATE_COL] = self.df['Date'].apply(
+        self.df[DATE_COL] = self.df['Date'].apply(
             lambda date: datetime.datetime.strptime(date, '%Y-%m-%d'))
-        start_date = self.df[Experiment.DATE_COL].min()
-        self.df['ordered_day'] = self.df[Experiment.DATE_COL].apply(
+        start_date = self.df[DATE_COL].min()
+        self.df['ordered_day'] = self.df[DATE_COL].apply(
             lambda date: (date - start_date).days)
 
         # calculating the window length
@@ -99,19 +98,19 @@ class Experiment:
 
             # the information about each dataset is saved
             self.train_date_info.append(
-                (X_train[Experiment.DATE_COL].min(),
-                 X_train[Experiment.DATE_COL].max(),
-                 (X_train[Experiment.DATE_COL].max() -
-                  X_train[Experiment.DATE_COL].min()).days + 1
+                (X_train[DATE_COL].min(),
+                 X_train[DATE_COL].max(),
+                 (X_train[DATE_COL].max() -
+                  X_train[DATE_COL].min()).days + 1
                  ))
             self.val_date_info.append(
-                (X_val[Experiment.DATE_COL].min(),
-                 X_val[Experiment.DATE_COL].max(),
-                 (X_val[Experiment.DATE_COL].max() - X_val[Experiment.DATE_COL].min()).days + 1))
+                (X_val[DATE_COL].min(),
+                 X_val[DATE_COL].max(),
+                 (X_val[DATE_COL].max() - X_val[DATE_COL].min()).days + 1))
             self.test_date_info.append(
-                (X_test[Experiment.DATE_COL].min(),
-                 X_test[Experiment.DATE_COL].max(),
-                 (X_test[Experiment.DATE_COL].max() - X_test[Experiment.DATE_COL].min()).days + 1))
+                (X_test[DATE_COL].min(),
+                 X_test[DATE_COL].max(),
+                 (X_test[DATE_COL].max() - X_test[DATE_COL].min()).days + 1))
 
             # fit transformer and transform the datasets
             transformer.fit(X_train, y_train)
@@ -134,24 +133,12 @@ class Experiment:
         scores = [train_scores, val_scores, test_scores]
         horiz_scores = [None, val_horiz_scores, test_horiz_scores]
         dataset_types = [Experiment.TRAIN, Experiment.VAL, Experiment.TEST]
-        
+
         # the predictions of each fold.
         # They contain true, prediction, DATE_COL and Store columns
         self.predictions = []
 
         for fold in range(self.n_folds):
-            # read the fitted model from file
-            if mode == 'r':
-                with open(models_folder + f'model_{fold}.pickle', 'rb') as f:
-                    self.regressor = pickle.load(f)
-            # or fit it and write to file
-            else:
-                X, y = self.train_dfs[fold]
-                self.regressor.fit(X.drop(columns=Experiment.DATE_COL), y)
-                if mode == 'w':
-                    with open(models_folder + f'model_{fold}.pickle', 'wb') as f:
-                        pickle.dump(self.regressor, f)
-
             # scores on val and test datasets depending on horizont
             val_horiz_scores.append([])
             test_horiz_scores.append([])
@@ -161,24 +148,40 @@ class Experiment:
             X_val, y_val = self.val_dfs[fold]
             X_test, y_test = self.test_dfs[fold]
 
+            # read the fitted model from file
+            if mode == 'r':
+                with open(models_folder + f'model_{fold}.pickle', 'rb') as f:
+                    self.regressor = pickle.load(f)
+            # or fit it and write to file
+            else:
+                self.regressor.fit(
+                    X_train.drop(columns=DATE_COL),
+                    y_train,
+                    X_val.drop(columns=DATE_COL),
+                    y_val)
+
+                if mode == 'w':
+                    with open(models_folder + f'model_{fold}.pickle', 'wb') as f:
+                        pickle.dump(self.regressor, f)
+
             # combining all datasets for predicting on all data
             # and further processing the results
             all_X = pd.concat([X_train, X_val, X_test],
                               axis=0, ignore_index=True)
             all_y = pd.concat([y_train, y_val, y_test],
                               axis=0, ignore_index=True)
-            
+
             # predict all and save it
             prediction = self.regressor.predict(
-                all_X.drop(columns=Experiment.DATE_COL))
-            prediction = pd.concat([all_X[['Store', Experiment.DATE_COL]],
+                all_X.drop(columns=DATE_COL))
+            prediction = pd.concat([all_X[['Store', DATE_COL]],
                                     pd.Series(all_y, name='true'),
                                     pd.Series(
                 prediction, name='prediction'),
                 pd.Series(
-                [Experiment.TRAIN]*len(X_train) +
-                [Experiment.VAL]*len(X_val) +
-                [Experiment.TEST]*len(X_test),
+                [Experiment.TRAIN] * len(X_train) +
+                [Experiment.VAL] * len(X_val) +
+                [Experiment.TEST] * len(X_test),
                 name='dataset_type'
             )],
                 axis=1)
@@ -187,22 +190,22 @@ class Experiment:
             # processing the results of predicting
             # the train, val and test datasets
             for score, dataset_type, horiz_score in zip(scores, dataset_types, horiz_scores):
-                
+
                 # extracting the data of the dataset_type
                 prediction_of_dataset_type = prediction.loc[prediction['dataset_type'] == dataset_type]
                 score.append(Experiment.metric(prediction_of_dataset_type['true'],
                                                prediction_of_dataset_type['prediction']))
-                
+
                 if dataset_type == Experiment.TRAIN:
                     continue
-                
+
                 # for val and test datasets the scores depending
                 # on horizont are calculated
-                ds = prediction_of_dataset_type[Experiment.DATE_COL]
+                ds = prediction_of_dataset_type[DATE_COL]
                 all_dates = np.sort(ds.unique())
                 for date in all_dates:
                     prediction_of_dataset_type_horiz = prediction_of_dataset_type[
-                        prediction_of_dataset_type[Experiment.DATE_COL] == date]
+                        prediction_of_dataset_type[DATE_COL] == date]
                     horiz_score[fold].append(
                         Experiment.metric(prediction_of_dataset_type_horiz['true'],
                                           prediction_of_dataset_type_horiz['prediction']))
@@ -214,8 +217,6 @@ class Experiment:
                                   'val_start_date', 'val_end_date', 'val_days'])
         test_bounds = pd.DataFrame(self.test_date_info, columns=[
                                    'test_start_date', 'test_end_date', 'test_days'])
-        val_horiz_scores = pd.DataFrame(val_horiz_scores,
-                                        columns=[f'val_score_{i+1}' for i in range(self.val_part)])
         test_horiz_scores = pd.DataFrame(test_horiz_scores,
                                          columns=[f'test_score_{i+1}' for i in range(self.test_part)])
 
@@ -228,7 +229,7 @@ class Experiment:
                 'test_score': test_scores,
             }),
             train_bounds, val_bounds, test_bounds,
-            val_horiz_scores, test_horiz_scores
+            test_horiz_scores
         ], axis=1)
 
         # reducing the memory size
@@ -238,7 +239,7 @@ class Experiment:
 
         self.view_horizont_errors()
         self.view_dataset_slicing()
-        self.view_prediction_results()
+        # self.view_prediction_results()
 
         return self.results
 
@@ -246,18 +247,17 @@ class Experiment:
         for fold in range(self.n_folds):
             fold_info = self.results[self.results['fold'] == fold]
 
-            val_horizonts = np.arange(1, self.val_part + 1)
             test_horizonts = np.arange(1, self.test_part + 1)
-            val_horiz_scores = fold_info[[
-                f'val_score_{i}' for i in val_horizonts]].values[0]
             test_horiz_scores = fold_info[[
                 f'test_score_{i}' for i in test_horizonts]].values[0]
 
             plt.figure(figsize=(12, 7))
             plt.title(f'errors of horizonts, fold={fold}')
-            plt.plot(val_horizonts, val_horiz_scores)
-            plt.plot(test_horizonts + self.val_part, test_horiz_scores)
-            plt.legend(['val', 'test'])
+            plt.plot(test_horizonts, test_horiz_scores)
+            plt.plot(test_horizonts[6:],
+                pd.Series(test_horiz_scores).rolling(7).mean().dropna(),
+                c='r')
+            plt.legend(['test', 'rolling mean'])
             plt.xlabel('horizont')
             plt.ylabel('error')
             plt.grid(axis='y', ls='--')
@@ -314,7 +314,7 @@ class Experiment:
         for fold in range(self.n_folds):
             pred = self.predictions[fold].merge(self.store, on='Store')
             pred['rspe'] = (pred['true'] - pred['prediction']) / pred['true']
-            error_df = self.df.merge(pred, on=[Experiment.DATE_COL, 'Store'])
+            error_df = self.df.merge(pred, on=[DATE_COL, 'Store'])
             error_df = error_df[~error_df.rspe.abs().isin([-np.inf, np.inf])]
             error_df['StateHoliday'].replace(0, '0', inplace=True)
             self.error_dfs.append(error_df)
@@ -327,20 +327,20 @@ class Experiment:
             plt.show()
 
 
-def compare_experiments(exp1: Experiment, exp2: Experiment):
+def compare_experiments(exps: list, exp_names: list):
     """
     The experiments must be already run
     """
-    assert exp1.n_folds == exp2.n_folds
-    n_folds = exp1.n_folds
-    cats = ['DayOfWeek', 'Promo', 'StateHoliday', 'SchoolHoliday', 'StoreType',
-            'Assortment', 'Promo2', 'CompetitionOpenSinceMonth', 'CompetitionOpenSinceYear', ]
-    width = 30
-    for cat in cats:
-        height = 0.7 * exp1.error_dfs[0][cat].nunique()
-        fig, axes = plt.subplots(1, n_folds, figsize=(width, height))
-        for fold, error_dfs in enumerate(zip(exp1.error_dfs, exp2.error_dfs)):
-            error_df1, error_df2 = error_dfs
-            Experiment.plot_diff_cat_rmspe(
-                error_df1, error_df2, cat, axes[fold])
-        plt.show()
+    n_folds = exps[0].n_folds
+    assert len(exps) > 1, 'not enough experiments to compare'
+    assert all(map(lambda exp: exp.n_folds == n_folds, exps)), 'not all experiments are compatible'
+
+    plt.figure(figsize=(12, 7))
+    for exp in exps:
+        plt.plot(exp.results['test_score'])
+        plt.xlabel('fold')
+        plt.ylabel('error')
+        plt.title('errors of models in folds')
+
+    plt.legend(exp_names)
+    plt.show()

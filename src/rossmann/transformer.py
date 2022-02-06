@@ -6,6 +6,9 @@ import datetime
 from operator import attrgetter
 from itertools import product
 
+from rossmann.consts import DATE_COL, PROPHET_DATE_COL
+
+
 class Transformer(BaseEstimator, TransformerMixin):
     def fit(self, X, y):
         pass
@@ -87,6 +90,7 @@ class ProphetTransformer(Transformer):
             columns=['Date', 'Store']
         )
         X = X.merge(all_date_stores, how='right', on=['Date', 'Store']).fillna(0)
-        X['ds_for_ts'] = X['Date']
+        X[DATE_COL] = X['Date']
+        X.rename(columns={'Date': PROPHET_DATE_COL}, inplace=True)
 
-        return X[['Store', 'Date', 'ds_for_ts']], X['Sales']
+        return X[['Store', PROPHET_DATE_COL, DATE_COL]], X['Sales']
